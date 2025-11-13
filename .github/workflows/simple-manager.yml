@@ -1,0 +1,74 @@
+name: Simple Manager (Fixed)
+
+on:
+  workflow_dispatch:
+    inputs:
+      runtime_minutes:
+        description: 'Runtime (minutes)'
+        required: false
+        default: '15'
+
+jobs:
+  run-manager:
+    runs-on: ubuntu-latest
+    timeout-minutes: 1440
+    
+    steps:
+      - name: 🔐 Login to Docker Hub
+        run: echo "${{ secrets.DOCKER_HUB_TOKEN }}" | docker login -u hamid323232 --password-stdin
+
+      - name: 📥 Pull Latest Image
+        run: docker pull hamid323232/mcp-manager-hybrid:latest
+
+      - name: 🚀 Start Manager (Detached + Sleep)
+        run: |
+          # Generate Manager ID
+          MANAGER_ID="manager-github-${{ github.run_id }}-$(date +%s)"
+          echo "Manager ID: $MANAGER_ID"
+          
+          # Start container in DETACHED mode
+          CONTAINER_ID=$(docker run -d \
+            -e MANAGER_ID="$MANAGER_ID" \
+            -e API_URL="http://165.232.134.47:4001" \
+            -e NATS_HOST="165.232.134.47" \
+            hamid323232/mcp-manager-hybrid:latest)
+          
+          echo "Container started: $CONTAINER_ID"
+          echo "Waiting 30 seconds for initialization..."
+          sleep 30
+          
+          # Show initial logs
+          echo "Container logs:"
+          docker logs $CONTAINER_ID 2>&1 | tail -20
+          
+          # Verify container is running
+          if docker ps | grep -q $CONTAINER_ID; then
+            echo "✅ Container is running!"
+          else
+            echo "❌ Container stopped"
+            docker logs $CONTAINER_ID 2>&1
+            exit 1
+          fi
+          
+          # Keep workflow alive for specified duration
+          RUNTIME_SECONDS=$((${{ github.event.inputs.runtime_minutes }} * 60))
+          echo "Keeping workflow alive for ${{ github.event.inputs.runtime_minutes }} minutes..."
+          
+          # Monitor in background and sleep
+          (
+            for i in {1..30}; do
+              sleep $(($RUNTIME_SECONDS / 30))
+              if docker ps | grep -q $CONTAINER_ID; then
+                echo "[$(date)] Container still running..."
+              else
+                echo "[$(date)] Container stopped!"
+                exit 1
+              fi
+            done
+          ) &
+          
+          # Main sleep to keep workflow alive
+          sleep $RUNTIME_SECONDS
+          
+          echo "Runtime complete - shutting down"
+          docker stop $CONTAINER_ID 2>/dev/null || true
