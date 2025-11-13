@@ -1,0 +1,246 @@
+name: Manager Hybrid Spawner
+
+on:
+  workflow_dispatch:
+    inputs:
+      runtime_minutes:
+        description: 'Runtime for manager (minutes)'
+        required: false
+        default: '999'
+      manager_id:
+        description: 'Manager ID (auto-generated if empty)'
+        required: false
+        default: 'auto'
+
+env:
+  API_URL: http://165.232.134.47:4001
+  NATS_HOST: 165.232.134.47
+  NATS_PORT: 4222
+  CURSOR_API_KEY: key_9e2c497c3c8bb4a332eaa0db49e9a537ca59531d5b9ac484e848906c84123f45
+  DOCKER_IMAGE: hamid323232/mcp-manager-hybrid:latest
+
+jobs:
+  spawn-manager:
+    runs-on: ubuntu-latest
+    timeout-minutes: 1440  # 24 hours max
+    
+    steps:
+      - name: 🔍 Checkout
+        uses: actions/checkout@v4
+
+      - name: 🔐 Docker Hub Login
+        run: |
+          echo "Logging in to Docker Hub..."
+          echo "${{ secrets.DOCKER_HUB_TOKEN }}" | docker login -u hamid323232 --password-stdin
+          echo "✅ Docker Hub login successful"
+
+      - name: 📥 Pull Manager-Hybrid Docker Image
+        run: |
+          echo "Pulling Docker image: ${{ env.DOCKER_IMAGE }}"
+          docker pull ${{ env.DOCKER_IMAGE }}
+          echo "✅ Image pulled successfully"
+
+      - name: 🚀 Generate Manager ID
+        id: generate_id
+        run: |
+          if [ "${{ github.event.inputs.manager_id }}" == "auto" ] || [ -z "${{ github.event.inputs.manager_id }}" ]; then
+            TIMESTAMP=$(date +%s)
+            MANAGER_ID="manager-github-${{ github.run_id }}-${TIMESTAMP}"
+          else
+            MANAGER_ID="${{ github.event.inputs.manager_id }}"
+          fi
+          echo "manager_id=${MANAGER_ID}" >> $GITHUB_OUTPUT
+          echo "═══════════════════════════════════════════════════════════"
+          echo "🔷 MCP MANAGER HYBRID - GITHUB ACTIONS"
+          echo "═══════════════════════════════════════════════════════════"
+          echo "Manager ID: ${MANAGER_ID}"
+          echo "Runtime: ${{ github.event.inputs.runtime_minutes }} minutes"
+          echo "Run ID: ${{ github.run_id }}"
+          echo "API URL: ${{ env.API_URL }}"
+          echo "Role: mcp_manager"
+          echo "═══════════════════════════════════════════════════════════"
+
+      - name: 🎯 Start Manager-Hybrid Container
+        run: |
+          MANAGER_ID="${{ steps.generate_id.outputs.manager_id }}"
+          
+          echo "Starting manager container: ${MANAGER_ID}"
+          
+          docker run -d \
+            --name mcp-manager-hybrid \
+            -e MANAGER_ID="${MANAGER_ID}" \
+            -e API_URL="${{ env.API_URL }}" \
+            -e NATS_HOST="${{ env.NATS_HOST }}" \
+            -e NATS_PORT="${{ env.NATS_PORT }}" \
+            -e CURSOR_API_KEY="${{ env.CURSOR_API_KEY }}" \
+            -e NODE_ENV=production \
+            -e PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium \
+            -e CHROME_BIN=/usr/bin/chromium \
+            ${{ env.DOCKER_IMAGE }}
+          
+          # Wait for container to start
+          sleep 5
+          
+          # Check container status
+          if docker ps | grep -q mcp-manager-hybrid; then
+            echo "✅ Manager container started successfully"
+          else
+            echo "❌ Manager container failed to start"
+            docker logs mcp-manager-hybrid
+            exit 1
+          fi
+
+      - name: 📝 Register Manager with API
+        run: |
+          MANAGER_ID="${{ steps.generate_id.outputs.manager_id }}"
+          
+          echo "Registering manager with API..."
+          
+          RESPONSE=$(curl -s -X POST "${{ env.API_URL }}/api/workers" \
+            -H "Content-Type: application/json" \
+            -H "X-MCP-Role: mcp_manager" \
+            -d "{
+              \"worker_id\": \"${MANAGER_ID}\",
+              \"hostname\": \"github-actions-${{ github.run_id }}\",
+              \"platform\": \"linux\",
+              \"architecture\": \"x64\",
+              \"status\": \"online\",
+              \"tags\": \"github-actions,manager-hybrid,cursor-agent,docker\",
+              \"capabilities\": {
+                \"tools\": [\"mcp-manager-hybrid\", \"domlogger-unified\"],
+                \"cursor_agent\": true,
+                \"browser_automation\": true,
+                \"can_spawn_workers\": true
+              },
+              \"max_concurrent_tasks\": 5,
+              \"mcp_enabled\": true,
+              \"mcp_servers\": [\"mcp-manager-hybrid\", \"domlogger-unified\"],
+              \"role\": \"mcp_manager\"
+            }")
+          
+          echo "API Response: ${RESPONSE}"
+          
+          if echo "${RESPONSE}" | grep -q "success.*true"; then
+            echo "✅ Manager registered successfully"
+          else
+            echo "⚠️  Manager registration response received (may already be registered)"
+          fi
+
+      - name: 📊 Report Manager Started Milestone
+        run: |
+          MANAGER_ID="${{ steps.generate_id.outputs.manager_id }}"
+          
+          curl -s -X POST "${{ env.API_URL }}/api/milestones" \
+            -H "Content-Type: application/json" \
+            -H "X-MCP-Role: mcp_manager" \
+            -d "{
+              \"worker_id\": \"${MANAGER_ID}\",
+              \"milestone_name\": \"manager_spawned_github\",
+              \"milestone_type\": \"lifecycle\",
+              \"description\": \"Manager-hybrid spawned on GitHub Actions (Run: ${{ github.run_id }})\",
+              \"metrics\": {
+                \"workflow\": \"manager-hybrid-spawn.yml\",
+                \"run_id\": \"${{ github.run_id }}\",
+                \"runner\": \"ubuntu-latest\",
+                \"runtime_minutes\": ${{ github.event.inputs.runtime_minutes }}
+              }
+            }" > /dev/null 2>&1 || true
+          
+          echo "✅ Milestone reported"
+
+      - name: 🔴 Keep Manager Active
+        run: |
+          MANAGER_ID="${{ steps.generate_id.outputs.manager_id }}"
+          RUNTIME_SECONDS=$(( ${{ github.event.inputs.runtime_minutes }} * 60 ))
+          END_TIME=$(($(date +%s) + RUNTIME_SECONDS))
+          
+          echo "═══════════════════════════════════════════════════════════"
+          echo "🔴 MANAGER ACTIVE"
+          echo "═══════════════════════════════════════════════════════════"
+          echo "Manager ID: ${MANAGER_ID}"
+          echo "Runtime: ${{ github.event.inputs.runtime_minutes }} minutes"
+          echo "API: ${{ env.API_URL }}"
+          echo "NATS: ${{ env.NATS_HOST }}:${{ env.NATS_PORT }}"
+          echo "Role: mcp_manager"
+          echo "═══════════════════════════════════════════════════════════"
+          echo ""
+          echo "Manager is now listening for tasks via NATS..."
+          echo "Channel: worker.task.${MANAGER_ID}"
+          echo ""
+          
+          COUNTER=0
+          while [ $(date +%s) -lt $END_TIME ]; do
+            # Check if container is still running
+            if ! docker ps | grep -q mcp-manager-hybrid; then
+              echo "❌ Manager container stopped unexpectedly"
+              docker logs mcp-manager-hybrid
+              exit 1
+            fi
+            
+            # Report heartbeat every 5 minutes
+            if [ $((COUNTER % 10)) -eq 0 ]; then
+              REMAINING=$((($END_TIME - $(date +%s)) / 60))
+              echo "[$(date '+%Y-%m-%d %H:%M:%S')] Manager ${MANAGER_ID} active (${REMAINING} minutes remaining)"
+              
+              # Update heartbeat in API
+              curl -s -X PATCH "${{ env.API_URL }}/api/workers/${MANAGER_ID}" \
+                -H "Content-Type: application/json" \
+                -H "X-MCP-Role: mcp_manager" \
+                -d "{\"status\": \"online\", \"last_heartbeat\": \"$(date -u +%Y-%m-%dT%H:%M:%S.000Z)\"}" > /dev/null 2>&1 || true
+            fi
+            
+            COUNTER=$((COUNTER + 1))
+            sleep 30
+          done
+          
+          echo ""
+          echo "⏱️  Runtime complete for Manager ${MANAGER_ID}"
+
+      - name: 📊 Report Manager Completion
+        if: always()
+        run: |
+          MANAGER_ID="${{ steps.generate_id.outputs.manager_id }}"
+          
+          curl -s -X POST "${{ env.API_URL }}/api/milestones" \
+            -H "Content-Type: application/json" \
+            -H "X-MCP-Role: mcp_manager" \
+            -d "{
+              \"worker_id\": \"${MANAGER_ID}\",
+              \"milestone_name\": \"manager_shutdown\",
+              \"milestone_type\": \"lifecycle\",
+              \"description\": \"Manager-hybrid shutting down (GitHub Actions runtime completed)\"
+            }" > /dev/null 2>&1 || true
+
+      - name: 🛑 Cleanup
+        if: always()
+        run: |
+          MANAGER_ID="${{ steps.generate_id.outputs.manager_id }}"
+          
+          echo "🛑 Stopping manager container..."
+          
+          # Update status to offline
+          curl -s -X PATCH "${{ env.API_URL }}/api/workers/${MANAGER_ID}" \
+            -H "Content-Type: application/json" \
+            -H "X-MCP-Role: mcp_manager" \
+            -d "{\"status\": \"offline\"}" > /dev/null 2>&1 || true
+          
+          # Stop and remove container
+          docker stop mcp-manager-hybrid 2>/dev/null || true
+          docker rm mcp-manager-hybrid 2>/dev/null || true
+          
+          echo "✅ Cleanup complete"
+
+      - name: 📋 Summary
+        if: always()
+        run: |
+          MANAGER_ID="${{ steps.generate_id.outputs.manager_id }}"
+          
+          echo "═══════════════════════════════════════════════════════════"
+          echo "📋 MANAGER LIFECYCLE COMPLETE"
+          echo "═══════════════════════════════════════════════════════════"
+          echo "Manager ID: ${MANAGER_ID}"
+          echo "Run ID: ${{ github.run_id }}"
+          echo "Runtime: ${{ github.event.inputs.runtime_minutes }} minutes"
+          echo "Status: Completed"
+          echo "═══════════════════════════════════════════════════════════"
+
