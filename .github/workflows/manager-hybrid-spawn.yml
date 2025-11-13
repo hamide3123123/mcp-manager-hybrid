@@ -90,6 +90,71 @@ jobs:
             exit 1
           fi
 
+      - name: 🔍 Verify Task Executor Running
+        run: |
+          MANAGER_ID="${{ steps.generate_id.outputs.manager_id }}"
+          
+          echo "Waiting for task executor to initialize..."
+          sleep 15
+          
+          echo ""
+          echo "═══════════════════════════════════════════════════════════"
+          echo "🔍 VERIFYING TASK EXECUTION SYSTEM"
+          echo "═══════════════════════════════════════════════════════════"
+          
+          # Check if execute-task.js process is running
+          echo "1️⃣  Checking if execute-task.js process is running..."
+          if docker exec mcp-manager-hybrid pgrep -f "execute-task.js" > /dev/null 2>&1; then
+            PID=$(docker exec mcp-manager-hybrid pgrep -f "execute-task.js")
+            echo "   ✅ Task executor process is running (PID: $PID)"
+          else
+            echo "   ❌ Task executor NOT running!"
+            echo ""
+            echo "Container logs:"
+            docker logs mcp-manager-hybrid
+            exit 1
+          fi
+          
+          # Check NATS connection in logs
+          echo ""
+          echo "2️⃣  Checking NATS connection..."
+          sleep 3
+          if docker logs mcp-manager-hybrid 2>&1 | grep -q "Connected to NATS"; then
+            echo "   ✅ NATS connection established"
+          else
+            echo "   ❌ NATS connection failed!"
+            echo ""
+            echo "Container logs:"
+            docker logs mcp-manager-hybrid
+            exit 1
+          fi
+          
+          # Check task subscription
+          echo ""
+          echo "3️⃣  Checking task channel subscription..."
+          if docker logs mcp-manager-hybrid 2>&1 | grep -q "Subscribed to task channel"; then
+            echo "   ✅ Task channel subscription active"
+            echo "   📡 Channel: worker.task.${MANAGER_ID}"
+          else
+            echo "   ❌ Task channel subscription failed!"
+            echo ""
+            echo "Container logs:"
+            docker logs mcp-manager-hybrid
+            exit 1
+          fi
+          
+          # Show recent container logs
+          echo ""
+          echo "4️⃣  Recent container activity:"
+          docker logs mcp-manager-hybrid 2>&1 | tail -10
+          
+          echo ""
+          echo "═══════════════════════════════════════════════════════════"
+          echo "✅ TASK EXECUTION SYSTEM VERIFIED"
+          echo "═══════════════════════════════════════════════════════════"
+          echo "Manager is ready to receive and execute tasks!"
+          echo ""
+
       - name: 📝 Register Manager with API
         run: |
           MANAGER_ID="${{ steps.generate_id.outputs.manager_id }}"
@@ -177,10 +242,28 @@ jobs:
               exit 1
             fi
             
+            # Check if execute-task.js is still running
+            if ! docker exec mcp-manager-hybrid pgrep -f "execute-task.js" > /dev/null 2>&1; then
+              echo "❌ Task executor crashed! Manager cannot receive tasks."
+              echo ""
+              echo "Container logs:"
+              docker logs mcp-manager-hybrid --tail 50
+              exit 1
+            fi
+            
             # Report heartbeat every 5 minutes
             if [ $((COUNTER % 10)) -eq 0 ]; then
               REMAINING=$((($END_TIME - $(date +%s)) / 60))
               echo "[$(date '+%Y-%m-%d %H:%M:%S')] Manager ${MANAGER_ID} active (${REMAINING} minutes remaining)"
+              
+              # Show recent task activity
+              RECENT_ACTIVITY=$(docker logs mcp-manager-hybrid 2>&1 --tail 20 | grep -E "(Received task|Task.*completed|Error|milestone)" | tail -3)
+              if [ -n "$RECENT_ACTIVITY" ]; then
+                echo "   Recent activity:"
+                echo "$RECENT_ACTIVITY" | sed 's/^/   /'
+              else
+                echo "   (no task activity)"
+              fi
               
               # Update heartbeat in API
               curl -s -X PATCH "${{ env.API_URL }}/api/workers/${MANAGER_ID}" \
