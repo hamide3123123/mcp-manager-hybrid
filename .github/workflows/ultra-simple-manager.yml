@@ -1,0 +1,41 @@
+name: Ultra Simple Manager
+
+on:
+  workflow_dispatch:
+    inputs:
+      runtime_minutes:
+        description: 'Runtime (minutes)'
+        required: false
+        default: '15'
+
+jobs:
+  run-manager:
+    runs-on: ubuntu-latest
+    timeout-minutes: 1440
+    
+    steps:
+      - name: Login & Pull
+        run: |
+          echo "${{ secrets.DOCKER_HUB_TOKEN }}" | docker login -u hamid323232 --password-stdin
+          docker pull hamid323232/mcp-manager-hybrid:latest
+
+      - name: Start & Wait
+        run: |
+          MANAGER_ID="manager-github-${{ github.run_id }}-$(date +%s)"
+          echo "Manager ID: $MANAGER_ID"
+          
+          docker run -d \
+            --name manager \
+            -e MANAGER_ID="$MANAGER_ID" \
+            -e API_URL="http://165.232.134.47:4001" \
+            -e NATS_HOST="165.232.134.47" \
+            hamid323232/mcp-manager-hybrid:latest
+          
+          echo "Container started, waiting 30s..."
+          sleep 30
+          docker logs manager 2>&1 | tail -20
+          
+          echo "Sleeping for ${{ github.event.inputs.runtime_minutes }} minutes..."
+          sleep $((${{ github.event.inputs.runtime_minutes }} * 60))
+          
+          docker stop manager || true
