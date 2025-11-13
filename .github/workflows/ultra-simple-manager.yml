@@ -14,10 +14,12 @@ jobs:
     timeout-minutes: 1440
     
     steps:
-      - name: Login & Pull
+      - name: Login & Pull (FORCE LATEST)
         run: |
           echo "${{ secrets.DOCKER_HUB_TOKEN }}" | docker login -u hamid323232 --password-stdin
-          docker pull hamid323232/mcp-manager-hybrid:latest
+          # Force pull latest without cache
+          docker pull --no-cache hamid323232/mcp-manager-hybrid:latest
+          echo "✅ Forced pull of latest image"
 
       - name: Start & Wait
         run: |
