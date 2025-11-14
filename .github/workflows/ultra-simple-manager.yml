@@ -14,18 +14,28 @@ jobs:
     timeout-minutes: 1440
     
     steps:
-      - name: Login & Pull (FORCE LATEST)
+      - name: Login & Pull Latest Image
         run: |
           echo "${{ secrets.DOCKER_HUB_TOKEN }}" | docker login -u hamid323232 --password-stdin
-          # Force pull latest without cache
-          docker pull --no-cache hamid323232/mcp-manager-hybrid:latest
-          echo "✅ Forced pull of latest image"
+          
+          # Remove any cached images first
+          docker rmi hamid323232/mcp-manager-hybrid:latest 2>/dev/null || true
+          
+          # Pull fresh image (always pull, no cached layers)
+          docker pull hamid323232/mcp-manager-hybrid:latest
+          
+          echo "✅ Pulled latest image"
+          docker images | grep mcp-manager-hybrid | head -3
 
-      - name: Start & Wait
+      - name: Start Manager & Monitor
         run: |
           MANAGER_ID="manager-github-${{ github.run_id }}-$(date +%s)"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           echo "Manager ID: $MANAGER_ID"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo ""
           
+          # Start manager
           docker run -d \
             --name manager \
             -e MANAGER_ID="$MANAGER_ID" \
@@ -33,11 +43,19 @@ jobs:
             -e NATS_HOST="165.232.134.47" \
             hamid323232/mcp-manager-hybrid:latest
           
-          echo "Container started, waiting 30s..."
+          echo "⏳ Waiting 30 seconds for startup..."
           sleep 30
-          docker logs manager 2>&1 | tail -20
           
-          echo "Sleeping for ${{ github.event.inputs.runtime_minutes }} minutes..."
+          echo ""
+          echo "📋 Initial logs:"
+          docker logs manager 2>&1 | tail -25
+          
+          echo ""
+          echo "🔄 Manager running for ${{ github.event.inputs.runtime_minutes }} minutes..."
           sleep $((${{ github.event.inputs.runtime_minutes }} * 60))
+          
+          echo ""
+          echo "📋 Final logs:"
+          docker logs manager 2>&1 | tail -50
           
           docker stop manager || true
